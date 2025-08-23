@@ -8,6 +8,8 @@ from helpers import load_txt, load_encoder_decoder, create_batches
 #   -T: Text Length of the text
 #   -C: Chanels Embedding dimension
 
+#   -AD: Attention dimension
+
 class Embedding(nn.Module):
     def __init__(self, token_dic, emb_dim, text_length):
         super().__init__()
@@ -19,16 +21,39 @@ class Embedding(nn.Module):
         out = self.embedding_table(x) + self.possitional_emb(torch.arange(x.shape[1]))
         return out #Shape(B, text_lengt, emb_dim)
     
+
+class AttentionHead(nn.Module):
+    def __init__(self, emb_dim, attention_dim):
+        super().__init__()
+        self.query = nn.Linear(emb_dim, attention_dim)
+        self.key = nn.Linear(emb_dim, attention_dim)
+        self.value = nn.Linear(emb_dim, attention_dim)
+        #Mask for the Q(B,T,AD) @ K.T(B,AD,T) output of shape (B, T, T)
+        self.register_buffer('mask', torch.tril(torch.ones(text_length, text_length)))
+
+    def forward(self, x):
+        B,T,C = x.shape
+        QK = self.query(x) @ self.key(x).transpose(-1,-2) #shape(B,T,T)
+        mask_QK = torch.masked_fill(QK, self.mask[:T,:T] == 0, value= float('-inf'))
+        attention = F.softmax(mask_QK/(self.key.weight.shape[-1])**(1/2), dim = -1) #shape(B,T,T)
+        attention = attention @ self.value(x) #shape(B,T,AD)
+        return attention
+
+
+
+
 class Decoder(nn.Module):
-    def __init__(self, token_dic, emb_dim, text_length):
+    def __init__(self, token_dic, emb_dim, attention_dim, text_length):
         super().__init__()
 
         self.embedding = Embedding(token_dic, emb_dim, text_length)
-        self.ln = nn.Linear(emb_dim, token_dic)
+        self.head = AttentionHead(emb_dim, attention_dim)
+        self.ln = nn.Linear(attention_dim, token_dic)
 
     def forward(self, x):
         emb_x = self.embedding(x) #Shape(B,T,C)
-        logits = self.ln(emb_x)
+        att_x = self.head(emb_x) #Shape(B,T,AD)
+        logits = self.ln(att_x)
 
         return logits
     
@@ -44,13 +69,15 @@ class Decoder(nn.Module):
         return text_idx
         
 
+####Run script#####
     
 text = load_txt('input.txt')
 token_dic = len(set(text))
 emb_dim = 32
 text_length = 10
+attention_dim = 16
 
-model = Decoder(token_dic, emb_dim, text_length)
+model = Decoder(token_dic, emb_dim, attention_dim, text_length)
 optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-2)
 
 #train loop:
