@@ -99,7 +99,7 @@ class Decoder(nn.Module):
 
 ####Run script#####
     
-text = load_txt('input.txt')
+text = load_txt('Don_Quijote_esp.txt')
 token_dic = len(set(text))
 emb_dim = 32
 text_length = 10
