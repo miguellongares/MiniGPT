@@ -10,6 +10,10 @@ from helpers import load_txt, load_encoder_decoder, create_batches
 
 #   -AD: Attention dimension
 
+#Creating a vanilla transformer model where:
+#   head_size = embedding_dimension // head_n
+#IT IS POSSIBLE CHOOSE OTHER DIMENSIONS BUT USSING A FINAL LINEAR LAYER TO MATCH VECTOR
+
 class Embedding(nn.Module):
     def __init__(self, token_dic, emb_dim, text_length):
         super().__init__()
@@ -38,7 +42,6 @@ class AttentionHead(nn.Module):
         attention = F.softmax(mask_QK/(self.key.weight.shape[-1])**(1/2), dim = -1) #shape(B,T,T)
         attention = attention @ self.value(x) #shape(B,T,AD)
         return attention
-
 
 
 
