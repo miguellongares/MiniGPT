@@ -12,7 +12,7 @@ from helpers import load_txt, load_encoder_decoder, create_batches
 
 #Creating a vanilla transformer model where:
 #   head_size = embedding_dimension // head_n
-#IT IS POSSIBLE CHOOSE OTHER DIMENSIONS BUT USSING A FINAL LINEAR LAYER TO MATCH VECTOR
+#IT IS POSSIBLE TO CHOOSE OTHER DIMENSIONS BUT USSING A FINAL LINEAR LAYER TO MATCH VECTOR
 
 class Embedding(nn.Module):
     def __init__(self, token_dic, emb_dim, text_length):
@@ -42,20 +42,45 @@ class AttentionHead(nn.Module):
         attention = F.softmax(mask_QK/(self.key.weight.shape[-1])**(1/2), dim = -1) #shape(B,T,T)
         attention = attention @ self.value(x) #shape(B,T,AD)
         return attention
+    
+class MultiHeadAttention(nn.Module):
+    def __init__(self, emb_dim, att_dim, n_heads, text_length):
+        super().__init__()
+        self.att_dim = att_dim
+        self.n_heads = n_heads
+        self.attentionLayer = nn.Linear(emb_dim, att_dim * 3)
+        self.register_buffer('mask', torch.tril(torch.ones(text_length,text_length)))
+
+    def forward(self,x):
+        B,T,_ = x.shape #Batch and textlength
+        #split the attention layer into query, key and value:
+        Q,K,V = torch.split(self.attentionLayer(x),self.att_dim,dim=-1) # each with shape (B,T,AD)
+        #split each into the n-heads: (batch, n_h, T, head_size)
+        q = Q.view(B, T, self.n_heads, -1).transpose(-2,-3)
+        k = K.view(B, T, self.n_heads, -1).transpose(-2,-3)
+        v = V.view(B, T, self.n_heads, -1).transpose(-2,-3)
+
+        qk = q @ k.transpose(-1,-2)
+        qk_mask = qk.masked_fill(self.mask[:T,:T] == 0, value=float('-inf')) 
+        qk_soft = F.softmax(qk_mask/(self.att_dim/3)**(1/2), dim=-1) #shape (B,h_n, T, T)
+        att_heads = qk_soft @ v #shape (B,h_n, T, head_size)
+        attention = att_heads.transpose(-2,-3).reshape(B,T,-1) #shape(B,h_n, T, AD)
+        return attention
 
 
 
 class Decoder(nn.Module):
-    def __init__(self, token_dic, emb_dim, attention_dim, text_length):
+    def __init__(self, token_dic, emb_dim, attention_dim, n_heads, text_length):
         super().__init__()
 
         self.embedding = Embedding(token_dic, emb_dim, text_length)
-        self.head = AttentionHead(emb_dim, attention_dim)
+        #self.head = AttentionHead(emb_dim, attention_dim)
+        self.multihead = MultiHeadAttention(emb_dim, attention_dim, n_heads, text_length)
         self.ln = nn.Linear(attention_dim, token_dic)
 
     def forward(self, x):
         emb_x = self.embedding(x) #Shape(B,T,C)
-        att_x = self.head(emb_x) #Shape(B,T,AD)
+        att_x = self.multihead(emb_x) #Shape(B,T,AD)
         logits = self.ln(att_x)
 
         return logits
@@ -78,9 +103,10 @@ text = load_txt('input.txt')
 token_dic = len(set(text))
 emb_dim = 32
 text_length = 10
-attention_dim = 16
+attention_dim = 32
+n_heads = 8
 
-model = Decoder(token_dic, emb_dim, attention_dim, text_length)
+model = Decoder(token_dic, emb_dim, attention_dim, n_heads, text_length)
 optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-2)
 
 #train loop:
