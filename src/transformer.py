@@ -25,26 +25,8 @@ class Embedding(nn.Module):
         out = self.embedding_table(x) + self.possitional_emb(torch.arange(x.shape[1]))
         return out #Shape(B, text_lengt, emb_dim)
     
-
-class AttentionHead(nn.Module):
-    def __init__(self, emb_dim, attention_dim):
-        super().__init__()
-        self.query = nn.Linear(emb_dim, attention_dim)
-        self.key = nn.Linear(emb_dim, attention_dim)
-        self.value = nn.Linear(emb_dim, attention_dim)
-        #Mask for the Q(B,T,AD) @ K.T(B,AD,T) output of shape (B, T, T)
-        self.register_buffer('mask', torch.tril(torch.ones(text_length, text_length)))
-
-    def forward(self, x):
-        B,T,C = x.shape
-        QK = self.query(x) @ self.key(x).transpose(-1,-2) #shape(B,T,T)
-        mask_QK = torch.masked_fill(QK, self.mask[:T,:T] == 0, value= float('-inf'))
-        attention = F.softmax(mask_QK/(self.key.weight.shape[-1])**(1/2), dim = -1) #shape(B,T,T)
-        attention = attention @ self.value(x) #shape(B,T,AD)
-        return attention
-    
 class MultiHeadAttention(nn.Module):
-    def __init__(self, emb_dim, att_dim, n_heads, text_length):
+    def __init__(self, emb_dim, att_dim, n_heads, text_length, masked = False):
         super().__init__()
         assert att_dim % n_heads == 0, "att_dim must be divisible by n_heads"
         self.att_dim = att_dim
@@ -52,7 +34,10 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = att_dim // n_heads
 
         self.attentionLayer = nn.Linear(emb_dim, att_dim * 3)
-        self.register_buffer('mask', torch.tril(torch.ones(text_length, text_length)))
+        if masked:
+            self.register_buffer('mask', torch.tril(torch.ones(text_length, text_length)))
+        else:
+            self.register_buffer('mask', torch.ones(text_length, text_length))
 
     def forward(self, x):
         B, T, _ = x.shape
@@ -77,20 +62,38 @@ class MultiHeadAttention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, T, self.att_dim)
         return out
 
-
+class TransformerBlock(nn.Module):
+    def __init__(self, emb_dim, att_dim, n_heads, text_length):
+        super().__init__()
+        self.masked_multi_head_attention = MultiHeadAttention(emb_dim, att_dim, n_heads, text_length, masked=True)
+        self.FeedForward = nn.Sequential(nn.Linear(att_dim, 4*att_dim),
+                                         nn.ReLU(),
+                                         nn.Linear(4*att_dim, att_dim),
+                                         nn.ReLU())
+        self.ln1 = nn.LayerNorm(att_dim)
+        self.ln2 = nn.LayerNorm(att_dim)
+        
+    def forward(self, x):
+        #First part of masked multi-head-attention with res connection and layser norm
+        mask_att = self.masked_multi_head_attention(x)
+        att = self.ln1(mask_att) + x
+        #Third part using Feed Forward with res connection and layer norm
+        feedForward_x = self.FeedForward(att)
+        out = self.ln2(feedForward_x) + att
+        return out #Shape(B, T, AD == C)
 
 class Decoder(nn.Module):
     def __init__(self, token_dic, emb_dim, attention_dim, n_heads, text_length):
         super().__init__()
 
         self.embedding = Embedding(token_dic, emb_dim, text_length)
-        #self.head = AttentionHead(emb_dim, attention_dim)
-        self.multihead = MultiHeadAttention(emb_dim, attention_dim, n_heads, text_length)
+        #self.multihead = MultiHeadAttention(emb_dim, attention_dim, n_heads, text_length)
+        self.transformerblock = TransformerBlock(emb_dim, attention_dim, n_heads, text_length)
         self.ln = nn.Linear(attention_dim, token_dic)
 
     def forward(self, x):
         emb_x = self.embedding(x) #Shape(B,T,C)
-        att_x = self.multihead(emb_x) #Shape(B,T,AD)
+        att_x = self.transformerblock(emb_x) #Shape(B,T,AD)
         logits = self.ln(att_x)
 
         return logits
@@ -113,22 +116,22 @@ text = load_txt('Don_Quijote_esp.txt')
 encoder, decoder = load_encoder_decoder(text)
 data = encoder(text)
 token_dic = len(set(data))
-emb_dim = 32
-text_length = 32
-attention_dim = 32
-n_heads = 8
+emb_dim = 128
+text_length = 64
+attention_dim = 128
+n_heads = 16
 
 train_data, val_data = train_val_split(data, 0.9)
 
 model = Decoder(token_dic, emb_dim, attention_dim, n_heads, text_length)
-optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-2)
+optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-3)
 
-val_batches = [create_batches(val_data, n_batches=32, length=text_length) for _ in range(80)] ##test
+val_batches = [create_batches(val_data, n_batches=64, length=text_length) for _ in range(80)] ##test
 
 #train loop:
-for iter in range(1000):
+for iter in range(2000):
     optimizer.zero_grad()
-    x, y = create_batches(train_data, n_batches=32, length= text_length) #shape (B, T), (B, T)
+    x, y = create_batches(train_data, n_batches=64, length= text_length) #shape (B, T), (B, T)
     output = model(x) #output shape (B, T, T)
     input = output.view((-1,token_dic))
     target = y.view(-1)
