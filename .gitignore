@@ -1,5 +1,6 @@
 #Ignore:
 testnotes.ipynb
-transformer copy.py
-bigram.py
+src/transformer copy.py
+src/bigram.py
 src/test*
+
