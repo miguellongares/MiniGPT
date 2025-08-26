@@ -21,14 +21,25 @@ def load_encoder_decoder(text):
     decoder = lambda code: [decoder_dic[i] for i in code]
     return encoder, decoder
 
-def create_batches(text, n_batches, length):
-    encoder, _ = load_encoder_decoder(text)
-    start_idxs = torch.randint(0, len(text)-length, (n_batches,))
-    X = torch.vstack([torch.tensor(encoder(text[idx:idx+length])) for idx in start_idxs])
-    Y = torch.vstack([torch.tensor(encoder(text[idx+1:idx+length+1])) for idx in start_idxs])
-    return X, Y
+
+def create_batches(data, n_batches, length):
+    start_idxs = torch.randint(0, len(data)-length, (n_batches,))
+    X = torch.stack([torch.tensor(data[idx:idx+length]) for idx in start_idxs])
+    Y = torch.stack([torch.tensor(data[idx+1:idx+length+1]) for idx in start_idxs])
+    return X,Y
+
+
+def train_val_split(data, train_size):
+    split_idx = int(len(data)*train_size)
+    train_text = data[:split_idx]
+    val_text = data[split_idx:]
+    return train_text, val_text
+
 
 if __name__ == '__main__':
-    text = load_txt('input.txt')
-    print(create_batches(text, 3, 4))
+    text = load_txt('Don_Quijote_esp.txt')
+    train_text, val_text = train_val_split(text, 0.9)
+    print(len(train_text), len(val_text))
+    print(val_text)
+
     
