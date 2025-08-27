@@ -83,17 +83,19 @@ class TransformerBlock(nn.Module):
         return out #Shape(B, T, AD == C)
 
 class Decoder(nn.Module):
-    def __init__(self, token_dic, emb_dim, attention_dim, n_heads, text_length):
+    def __init__(self, token_dic, emb_dim, attention_dim, n_heads, text_length, n_layers):
         super().__init__()
 
         self.embedding = Embedding(token_dic, emb_dim, text_length)
-        #self.multihead = MultiHeadAttention(emb_dim, attention_dim, n_heads, text_length)
-        self.transformerblock = TransformerBlock(emb_dim, attention_dim, n_heads, text_length)
+        self.n_transformerblocks = nn.ModuleList([
+            TransformerBlock(emb_dim, attention_dim, n_heads, text_length) for _ in range(n_layers)
+            ])
         self.ln = nn.Linear(attention_dim, token_dic)
 
     def forward(self, x):
         emb_x = self.embedding(x) #Shape(B,T,C)
-        att_x = self.transformerblock(emb_x) #Shape(B,T,AD)
+        for transfromerblock in self.n_transformerblocks:
+            att_x = transfromerblock(emb_x) #Shape(B,T,AD)
         logits = self.ln(att_x)
 
         return logits
@@ -111,25 +113,31 @@ class Decoder(nn.Module):
         
 
 ####Run script#####
-    
+""" 
+It is possible to use different emb_dim and attention_dim but it would require to 
+set linear layers of nn.Linear(attention_dim, emb_dim) before adding x (skip connection) 
+"""
+#GPT-Configurations
+emb_dim = 128*2
+attention_dim = emb_dim #vanilla GPT where attention_dim == emb_dim 
+text_length = 64        #how much context will the transformer take into acount
+n_heads = 16*2            #number of heads in each multi-head transformer
+n_layers = 6            #number of decoder layers 
+
 text = load_txt('Don_Quijote_esp.txt')
 encoder, decoder = load_encoder_decoder(text)
 data = encoder(text)
 token_dic = len(set(data))
-emb_dim = 128
-text_length = 64
-attention_dim = 128
-n_heads = 16
 
 train_data, val_data = train_val_split(data, 0.9)
 
-model = Decoder(token_dic, emb_dim, attention_dim, n_heads, text_length)
+model = Decoder(token_dic, emb_dim, attention_dim, n_heads, text_length, n_layers)
 optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-3)
 
 val_batches = [create_batches(val_data, n_batches=64, length=text_length) for _ in range(80)] ##test
 
 #train loop:
-for iter in range(2000):
+for iter in range(3000):
     optimizer.zero_grad()
     x, y = create_batches(train_data, n_batches=64, length= text_length) #shape (B, T), (B, T)
     output = model(x) #output shape (B, T, T)
