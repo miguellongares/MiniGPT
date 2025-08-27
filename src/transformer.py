@@ -5,24 +5,26 @@ from helpers import load_txt, load_encoder_decoder, create_batches, train_val_sp
 
 #Input shape consists of:
 #   -B: BATCH Parallel samples, Batch size
-#   -T: Text Length of the text
-#   -C: Chanels Embedding dimension
-
-#   -AD: Attention dimension
+#   -T: Text context length (how much previous tokens does the model consider)
+#   -ED:Embedding dimension
+#   -AD:Attention dimension
 
 #Creating a vanilla transformer model where:
-#   head_size = embedding_dimension // head_n
+#head_size = embedding_dimension // head_n
 #IT IS POSSIBLE TO CHOOSE OTHER DIMENSIONS BUT USSING A FINAL LINEAR LAYER TO MATCH VECTOR
 
 class Embedding(nn.Module):
     def __init__(self, token_dic, emb_dim, text_length):
         super().__init__()
-        #input shape (B, T)
-        self.embedding_table = nn.Embedding(token_dic, emb_dim) #(B,T,C)
+        self.embedding_table = nn.Embedding(token_dic, emb_dim) 
         self.possitional_emb = nn.Embedding(text_length, emb_dim)
+        self.emb_dropout = nn.Dropout(0.1)
+
 
     def forward(self, x):
-        out = self.embedding_table(x) + self.possitional_emb(torch.arange(x.shape[1]))
+        #input shape (B, T)
+        out = self.embedding_table(x) + self.possitional_emb(torch.arange(x.shape[1])) #(B,T,ED)
+        out = self.emb_dropout(out) #Prevent over-relying on specific token embeddings.
         return out #Shape(B, text_lengt, emb_dim)
     
 class MultiHeadAttention(nn.Module):
@@ -34,6 +36,8 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = att_dim // n_heads
 
         self.attentionLayer = nn.Linear(emb_dim, att_dim * 3)
+        self.att_dropout = nn.Dropout(0.1) #regularize token-to-token dependencies.
+        self.out_dropout = nn.Dropout(0.1) #prevent co-adaptation of heads.
         if masked:
             self.register_buffer('mask', torch.tril(torch.ones(text_length, text_length)))
         else:
@@ -43,7 +47,7 @@ class MultiHeadAttention(nn.Module):
         B, T, _ = x.shape
 
         # project to Q, K, V
-        Q, K, V = torch.split(self.attentionLayer(x), self.att_dim, dim=-1)  # (B,T,att_dim)
+        Q, K, V = torch.split(self.attentionLayer(x), self.att_dim, dim=-1)  # (B,T,AD)
 
         # reshape into heads: (B, n_heads, T, head_dim)
         q = Q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
@@ -52,14 +56,16 @@ class MultiHeadAttention(nn.Module):
 
         # scaled dot-product attention
         scale = self.head_dim ** 0.5
-        qk = (q @ k.transpose(-1, -2)) / scale            # (B, n_heads, T, T)
+        qk = (q @ k.transpose(-1, -2)) / scale #(B, n_heads, T, T)
         qk = qk.masked_fill(self.mask[:T, :T] == 0, float('-inf'))
         att = F.softmax(qk, dim=-1)
+        att = self.att_dropout(att)
 
-        out = att @ v                                     # (B, n_heads, T, head_dim)
+        out = att @ v #(B, n_heads, T, head_dim)
 
-        # merge heads: (B, T, att_dim)
+        # merge heads: (B, T, AD)
         out = out.transpose(1, 2).contiguous().view(B, T, self.att_dim)
+        out = self.out_dropout(out)
         return out
 
 class TransformerBlock(nn.Module):
@@ -68,17 +74,21 @@ class TransformerBlock(nn.Module):
         self.masked_multi_head_attention = MultiHeadAttention(emb_dim, att_dim, n_heads, text_length, masked=True)
         self.FeedForward = nn.Sequential(nn.Linear(att_dim, 4*att_dim),
                                          nn.ReLU(),
+                                         nn.Dropout(0.1), #prevent memorization in overparameterized layers.
                                          nn.Linear(4*att_dim, att_dim),
                                          nn.ReLU())
         self.ln1 = nn.LayerNorm(att_dim)
         self.ln2 = nn.LayerNorm(att_dim)
+        self.residual_dropout = nn.Dropout(0.1)
         
     def forward(self, x):
         #First part of masked multi-head-attention with res connection and layser norm
         mask_att = self.masked_multi_head_attention(x)
+        mask_att = self.residual_dropout(mask_att)
         att = self.ln1(mask_att) + x
         #Third part using Feed Forward with res connection and layer norm
         feedForward_x = self.FeedForward(att)
+        feedForward_x = self.residual_dropout(feedForward_x)
         out = self.ln2(feedForward_x) + att
         return out #Shape(B, T, AD == C)
 
@@ -93,7 +103,7 @@ class Decoder(nn.Module):
         self.ln = nn.Linear(attention_dim, token_dic)
 
     def forward(self, x):
-        emb_x = self.embedding(x) #Shape(B,T,C)
+        emb_x = self.embedding(x) #Shape(B,T,ED)
         for transfromerblock in self.n_transformerblocks:
             att_x = transfromerblock(emb_x) #Shape(B,T,AD)
         logits = self.ln(att_x)
@@ -105,7 +115,7 @@ class Decoder(nn.Module):
         for i in range(generation_lenght):
             input = text_idx[:,-text_length:]
             out = self(input) 
-            next_x = F.softmax(out[:,-1,:], dim=-1) #Shape(B, C) last character
+            next_x = F.softmax(out[:,-1,:], dim=-1) #Shape(B, ED) last character
             next_idx = torch.multinomial(next_x, num_samples=1) # (B,1)
             text_idx = torch.cat([text_idx,next_idx], dim=1)
             
@@ -121,7 +131,7 @@ set linear layers of nn.Linear(attention_dim, emb_dim) before adding x (skip con
 emb_dim = 128*2
 attention_dim = emb_dim #vanilla GPT where attention_dim == emb_dim 
 text_length = 64        #how much context will the transformer take into acount
-n_heads = 16*2            #number of heads in each multi-head transformer
+n_heads = 16*2          #number of heads in each multi-head transformer
 n_layers = 6            #number of decoder layers 
 
 text = load_txt('Don_Quijote_esp.txt')
@@ -143,7 +153,7 @@ for iter in range(3000):
     output = model(x) #output shape (B, T, T)
     input = output.view((-1,token_dic))
     target = y.view(-1)
-    loss = F.cross_entropy(input, target) #has to be (B*T, C) and (B*T)
+    loss = F.cross_entropy(input, target) #has to be (B*T, ED) and (B*T)
     if iter % 100 == 0:
         model.eval()
         with torch.no_grad():
