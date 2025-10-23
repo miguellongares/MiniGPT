@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from helpers import load_txt, load_encoder_decoder, create_batches, train_val_split
+from config import *
 
 #Input shape consists of:
 #   -B: BATCH Parallel samples, Batch size
@@ -121,52 +122,52 @@ class Decoder(nn.Module):
             
         return text_idx
         
+if __name__ == '__main__':
+    ####Run script#####
+    """ 
+    It is possible to use different emb_dim and attention_dim but it would require to 
+    set linear layers of nn.Linear(attention_dim, emb_dim) before adding x (skip connection) 
+    """
+    #GPT-Configurations
+    emb_dim = 128*2
+    attention_dim = emb_dim #vanilla GPT where attention_dim == emb_dim 
+    text_length = 64        #how much context will the transformer take into acount
+    n_heads = 16*2          #number of heads in each multi-head transformer
+    n_layers = 6            #number of decoder layers 
 
-####Run script#####
-""" 
-It is possible to use different emb_dim and attention_dim but it would require to 
-set linear layers of nn.Linear(attention_dim, emb_dim) before adding x (skip connection) 
-"""
-#GPT-Configurations
-emb_dim = 128*2
-attention_dim = emb_dim #vanilla GPT where attention_dim == emb_dim 
-text_length = 64        #how much context will the transformer take into acount
-n_heads = 16*2          #number of heads in each multi-head transformer
-n_layers = 6            #number of decoder layers 
+    text = load_txt('Don_Quijote_esp.txt')
+    encoder, decoder = load_encoder_decoder(text)
+    data = encoder(text)
+    token_dic = len(set(data))
 
-text = load_txt('Don_Quijote_esp.txt')
-encoder, decoder = load_encoder_decoder(text)
-data = encoder(text)
-token_dic = len(set(data))
+    train_data, val_data = train_val_split(data, 0.9)
 
-train_data, val_data = train_val_split(data, 0.9)
+    model = Decoder(token_dic, emb_dim, attention_dim, n_heads, text_length, n_layers)
+    optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-3)
 
-model = Decoder(token_dic, emb_dim, attention_dim, n_heads, text_length, n_layers)
-optimizer = torch.optim.AdamW(model.parameters(), lr= 1e-3)
+    val_batches = [create_batches(val_data, n_batches=64, length=text_length) for _ in range(80)] ##test
 
-val_batches = [create_batches(val_data, n_batches=64, length=text_length) for _ in range(80)] ##test
-
-#train loop:
-for iter in range(3000):
-    optimizer.zero_grad()
-    x, y = create_batches(train_data, n_batches=64, length= text_length) #shape (B, T), (B, T)
-    output = model(x) #output shape (B, T, T)
-    input = output.view((-1,token_dic))
-    target = y.view(-1)
-    loss = F.cross_entropy(input, target) #has to be (B*T, ED) and (B*T)
-    if iter % 100 == 0:
-        model.eval()
-        with torch.no_grad():
-            vals = []
-            for x_val, y_val in val_batches:
-                val_logits = model(x_val).view(-1, token_dic)
-                vals.append(F.cross_entropy(val_logits, y_val.view(-1)).item())
-            val_loss = sum(vals) / len(vals)
-        model.train()
-        print(f"Train {loss.item():.4f} | Val {val_loss:.4f}")
-    loss.backward()
-    optimizer.step()#
+    #train loop:
+    for iter in range(3000):
+        optimizer.zero_grad()
+        x, y = create_batches(train_data, n_batches=64, length= text_length) #shape (B, T), (B, T)
+        output = model(x) #output shape (B, T, T)
+        input = output.view((-1,token_dic))
+        target = y.view(-1)
+        loss = F.cross_entropy(input, target) #has to be (B*T, ED) and (B*T)
+        if iter % 100 == 0:
+            model.eval()
+            with torch.no_grad():
+                vals = []
+                for x_val, y_val in val_batches:
+                    val_logits = model(x_val).view(-1, token_dic)
+                    vals.append(F.cross_entropy(val_logits, y_val.view(-1)).item())
+                val_loss = sum(vals) / len(vals)
+            model.train()
+            print(f"Train {loss.item():.4f} | Val {val_loss:.4f}")
+        loss.backward()
+        optimizer.step()#
 
 
-gen = model.generate(torch.zeros((1,1), dtype=torch.long), generation_lenght= 1000)
-print(''.join(decoder(gen[0].tolist())))
+    gen = model.generate(torch.zeros((1,1), dtype=torch.long), generation_lenght= 1000)
+    print(''.join(decoder(gen[0].tolist())))
